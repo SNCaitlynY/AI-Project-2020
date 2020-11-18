@@ -1,34 +1,42 @@
-import matplotlib
-import matplotlib.pyplot as plt
-import os
-import numpy as np
-from keras import backend as K
-from keras import utils as keras_utils
-from keras import optimizers
-from keras import datasets
-from tqdm import tqdm
-import models 
-import utils
-
-import random
+from __future__ import print_function
+import keras
+from keras.preprocessing.image import ImageDataGenerator
+from keras.callbacks import ModelCheckpoint
+from keras.callbacks import EarlyStopping
 from tensorflow import set_random_seed
+import glob
+import numpy as np
+import time
+import random
+import os
 
-from make_images import convert_train_files
+from resnet import ResNet10
 
-# Set matplot canvas as large as containing the generated image grid.
-matplotlib.use('Agg')
-plt.rcParams['savefig.dpi'] = 400
-plt.rcParams['figure.dpi'] = 400
+from make_images import load_data_from_csv
 
-################# User console ##########################
-BATCH_SIZE = 512
-EPOCHS = 1  # Only one epoch is good enough for generation.
-read_train_from_csv = False  # True for reading from csv, false for loading dumped numpy arrays.
+# Starting to record time.
+start = time.time()
 
-train_files_path = "data/train/*.csv"
-train_images_path = "converted_numpy_60_60/train_images.npy"
-train_labels_path = "converted_numpy_60_60/train_labels.npy"
-################# User console ##########################
+############################ User console ##############################
+# Set training or testing.
+training = True
+read_test_from_csv = True  # True for reading from csv, false for loading dumped numpy arrays.
+
+test_file_path = "data/test.csv"
+saved_test_file_path = "output/test_pred.csv"
+
+test_ans_file_path = "data/test_ans.csv"
+saved_test_ans_file_path = "output/test_ans_pred.csv"
+################################# End ##################################
+
+# Below are the dumped numpy arrays.
+train_images_path = "converted_numpy_28_28/train_images.npy"
+valid_images_path = "converted_numpy_28_28/valid_images.npy"
+train_labels_path = "converted_numpy_28_28/train_labels.npy"
+valid_labels_path = "converted_numpy_28_28/valid_labels.npy"
+
+# Set GPU usage.
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 # Set random seed
 SEED = 1
@@ -37,95 +45,195 @@ random.seed(SEED)
 np.random.seed(SEED)
 set_random_seed(SEED)
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+# Training and test file paths.
+train_files_path = "data/train/*.csv"
 
-if read_train_from_csv:
-    # Load training data from csv files.
-    train_images, train_labels = convert_train_files(train_files_path)
-else:
-    # Reading from the dumped numpy files.
-    train_images = np.load(train_images_path)
-    train_labels = np.load(train_labels_path)
+# Numpy arrays path generated from "make_images.py"
+demo_images_path = "converted_numpy_28_28/demo_images.npy"
+test_images_path = "converted_numpy_28_28/test_images.npy"
+test_ans_images_path = "converted_numpy_28_28/test_ans_images.npy"
 
-def unison_shuffled_copies(a, b):
-    assert len(a) == len(b)
-    p = np.random.permutation(len(a))
-    return a[p], b[p]
+demo_labels_path = "converted_numpy_28_28/demo_labels.npy"
+test_labels_path = "converted_numpy_28_28/test_labels.npy"
+test_ans_labels_path = "converted_numpy_28_28/test_ans_labels.npy"
 
-train_images, train_labels = unison_shuffled_copies(train_images, train_labels)
-train_images = train_images.transpose(0, 2, 3, 1)  # Set channel_last format.
-train_images = train_images.reshape(-1, 60, 60)
+# Hyper-parameters.
+batch_size = 128
+num_classes = 30
+epochs = 12
 
-print("========== Dataset information ================")
-print("Train images shape: ", train_images.shape)
+# input image dimensions
+img_rows, img_cols = 28, 28
+input_shape = (img_rows, img_cols, 1)
+save_model_name = "output/best_model.hdf5"
+
+
+def search_all_labels():
+    """ Search the training dataset to generate label-index mappings."""
+    label_to_index = {}
+    index_to_label = {}
+    train_files = glob.glob(train_files_path)
+    basenames = [os.path.basename(train_file) for train_file in train_files]
+    index = 0
+    for basename in basenames:
+        name, ext = os.path.splitext(basename)
+        if ext == ".csv":
+            label_to_index[name] = index
+            index_to_label[index] = name
+            index += 1
+    return label_to_index, index_to_label
+
+
+def unison_shuffled_copies(images, labels):
+    """Helper function for image-label random shuffle."""
+    assert len(images) == len(labels)
+    p = np.random.permutation(len(images))
+    return images[p], labels[p]
+
+
+# Generate label string and label index mappings.
+label_to_index, index_to_label = search_all_labels()
+print("======== Label-index mapping ==========")
+print("Label index to string mapping: \n", index_to_label)
 print()
 
-# Transform data format.
-X_train = train_images
-y_train = train_labels
-X_train = utils.transform_images(X_train)  # Normalize to [-1, 1]
-X_train = X_train[:, :, :, None]
-y_train = keras_utils.to_categorical(y_train, 100)  # One hot encoding.
+# Load training, validation and test dataset from the dumped numpy arrays.
+train_images = np.load(train_images_path)
+train_labels = np.load(train_labels_path)
 
-# Create the models
-print("Generator:")
-G = models.generator_model()
-G.summary()
+valid_images = np.load(valid_images_path)
+valid_labels = np.load(valid_labels_path)
 
-print("Discriminator:")
-D = models.discriminator_model()
-D.summary()
+if read_test_from_csv:
+    # Load test data from csv files.
+    test_images, test_labels = load_data_from_csv(test_file_path)
+    test_ans_images, test_ans_labels = load_data_from_csv(test_ans_file_path)
+else:
+    test_images = np.load(test_images_path)
+    test_labels = np.load(test_labels_path)
 
-print("Combined:")
-GD = models.generator_containing_discriminator(G, D)
-GD.summary()
+    test_ans_images = np.load(test_ans_images_path)
+    test_ans_labels = np.load(test_ans_labels_path)
 
-# Set optimizer and compile models.
-optimizer = optimizers.Adam(0.0002, 0.5)
-G.compile(loss='binary_crossentropy', optimizer=optimizer)
-GD.compile(loss='binary_crossentropy', optimizer=optimizer)
-D.trainable = True
-D.compile(loss='binary_crossentropy', optimizer=optimizer)
+# Set data as channel_last format.
+train_images = train_images.transpose(0, 2, 3, 1)
+valid_images = valid_images.transpose(0, 2, 3, 1)
+test_images = test_images.transpose(0, 2, 3, 1)
+test_ans_images = test_ans_images.transpose(0, 2, 3, 1)
 
-iteration = 0
-iter_per_epoch = int(X_train.shape[0] / BATCH_SIZE)
-for epoch in range(EPOCHS):
-    pbar = tqdm(desc="Epoch: {0}".format(epoch), total=X_train.shape[0])
+# Shuffle training data.
+train_images, train_labels = unison_shuffled_copies(train_images, train_labels)
 
-    g_losses_for_epoch = []
-    d_losses_for_epoch = []
+print("========== Dataset information ================")
+print("train images shape: ", train_images.shape)
+print("valid images shape: ", valid_images.shape)
+print("test images shape: ", test_images.shape)
+print("test_ans images shape: ", test_ans_images.shape)
+print()
 
-    for i in range(iter_per_epoch):
-        noise = utils.generate_noise((BATCH_SIZE, 100))
 
-        image_batch = X_train[i * BATCH_SIZE:(i + 1) * BATCH_SIZE]
-        label_batch = y_train[i * BATCH_SIZE:(i + 1) * BATCH_SIZE]
+x_train = train_images.astype('float32')
+x_valid = valid_images.astype('float32')
+x_test = test_images.astype('float32')
+x_test_ans = test_ans_images.astype('float32')
 
-        # Trainig discriminator.
-        generated_images = G.predict([noise, label_batch], verbose=0)
-        if i % 20 == 0:
-            image_grid = utils.generate_image_grid(G, title="Epoch {0}, iteration {1}".format(epoch, iteration))
-            utils.save_generated_image(image_grid, epoch, i, "images/iterations")
-        X = np.concatenate((image_batch, generated_images))
-        y = [1] * BATCH_SIZE + [0] * BATCH_SIZE
-        label_batches_for_discriminator = np.concatenate((label_batch, label_batch))
-        D_loss = D.train_on_batch([X, label_batches_for_discriminator], y)
-        d_losses_for_epoch.append(D_loss)
+# Training data augmentation.
+# 1. Rescale to [0, 1]
+# 2. random shear ratio: 0.2
+# 3. random zoom ratio: 0.2
+# 4. horizontal flip: enable
+train_datagen = ImageDataGenerator(
+        rescale=1./255,
+        shear_range=0.2,
+        zoom_range=0.2,
+        horizontal_flip=True,
+    )
 
-        # Training generaotr.
-        noise = utils.generate_noise((BATCH_SIZE, 100))
-        D.trainable = False
-        G_loss = GD.train_on_batch([noise, label_batch], [1] * BATCH_SIZE)
-        D.trainable = True
-        g_losses_for_epoch.append(G_loss)
+# Scale image to [0, 1].
+x_valid /= 255
+x_test /= 255
+x_test_ans /= 255
 
-        pbar.update(BATCH_SIZE)
-        iteration += 1
+# Convert class vectors to binary class matrices.
+y_train = keras.utils.to_categorical(train_labels, num_classes)
+y_valid = keras.utils.to_categorical(valid_labels, num_classes)
+y_test = keras.utils.to_categorical(test_labels, num_classes)
+y_test_ans = keras.utils.to_categorical(test_ans_labels, num_classes)
 
-    image_grid = utils.generate_image_grid(G, title="Epoch {0}".format(epoch))
-    utils.save_generated_image(image_grid, epoch, 0, "images/epochs")
-    pbar.close()
-    print("D loss: {0}, G loss: {1}".format(np.mean(d_losses_for_epoch), np.mean(g_losses_for_epoch)))
+# Use the modified Resnet10.
+model = ResNet10(input_shape, num_classes)
 
-    G.save_weights("models/generator.h5")
-    D.save_weights("models/discriminator.h5")
+model.compile(loss=keras.losses.categorical_crossentropy,
+              optimizer=keras.optimizers.Adadelta(),
+              metrics=['accuracy'])
+
+print(model.summary())
+
+# Make training data generator.
+train_datagen.fit(x_train)
+
+if training:
+    # Training.
+    history = model.fit_generator(
+        train_datagen.flow(x_train, y_train, batch_size=batch_size),
+        steps_per_epoch=x_train.shape[0] // batch_size,
+        epochs=epochs,
+        validation_data=(x_valid, y_valid),
+        callbacks=[
+            ModelCheckpoint(save_model_name, monitor='val_loss', verbose=0, save_best_only=True, mode='auto'),
+            EarlyStopping(monitor='val_loss', patience=5, verbose=0, mode='auto')
+        ]
+    )
+
+# Reload best weights and print accuracy.
+model.load_weights(save_model_name)
+
+print("========== validation and test accuracy ==============")
+valid_score = model.evaluate(x_valid, y_valid, verbose=0)
+print('Valid loss:', valid_score[0])
+print('Valid accuracy:', valid_score[1])
+
+test_score = model.evaluate(x_test, y_test, verbose=0)
+print('Test loss:', test_score[0])
+print('Test accuracy:', test_score[1])
+
+test_ans_score = model.evaluate(x_test_ans, y_test_ans, verbose=0)
+print('Test_ans loss:', test_ans_score[0])
+print('Test_ans accuracy:', test_ans_score[1])
+print()
+
+# Print and save predictions.
+print("============= Test predictions ===============")
+test_pred = model.predict(x_test)
+test_pred = np.argmax(test_pred, axis=1)
+test_pred = test_pred.astype(dtype=np.int32)
+test_pred = test_pred.tolist()
+test_labels = test_labels.astype(dtype=np.int32)
+pred_labels = [index_to_label[pred] for pred in test_pred]
+gt_labels = [index_to_label[gt] for gt in test_labels]
+print("Test prediction: ", pred_labels)
+print("Test label: ", gt_labels)
+print()
+
+test_pred_ans = model.predict(x_test_ans)
+test_pred_ans = np.argmax(test_pred_ans, axis=1)
+test_pred_ans = test_pred_ans.astype(dtype=np.int32)
+test_pred_ans = test_pred_ans.tolist()
+test_ans_labels = test_ans_labels.astype(dtype=np.int32)
+pred_ans_labels = [index_to_label[pred_ans] for pred_ans in test_pred_ans]
+gt_ans_labels = [index_to_label[gt_ans] for gt_ans in test_ans_labels]
+print("Test_ans prediction: ", pred_ans_labels)
+print("Test_ans label: ", gt_ans_labels)
+print()
+
+import pandas as pd
+# Saving test predictions.
+test_pred = pd.DataFrame({"predictions": pred_labels})
+test_ans_pred = pd.DataFrame({"predictions": pred_ans_labels})
+
+test_pred.to_csv(saved_test_file_path, index=True, sep=',')
+test_ans_pred.to_csv(saved_test_ans_file_path, index=True, sep=',')
+
+# Show total runtime.
+end = time.time()
+print("Total runtime is {}s".format(end-start))

@@ -1,4 +1,4 @@
-""" This part is for making images from strokes and showing the demo ones. """
+"""This part is for making images from strokes and showing the demo ones."""
 
 import glob
 import numpy as np
@@ -6,12 +6,18 @@ import os
 import pandas
 from PIL import Image
 
-#import cairocffi as cairo 
+import cairocffi as cairo 
 
 ############# User console #######################
+# Load data from csv files.
+demo_file_path = "data/demo.csv"
 train_files_path = "data/train/*.csv"
+valid_file_path = "data/valid.csv"
+test_file_path = "data/test.csv"
+test_ans_file_path = "data/test_ans.csv"
 
-size = 60  # 60 for generation.
+size = 28  # 28 for classification, 60 for generation.
+
 ############# User console #######################
 
 image_width = size
@@ -124,6 +130,43 @@ def convert_train_files(filename):
 
 
 if __name__=="__main__":
+    # Show and demo the drawings in "demo.csv".
+    show_demo_images, labels = load_data_from_csv(demo_file_path)
+    show_demo_images = show_demo_images.reshape((-1, image_width, image_height))
+    for idx, image in enumerate(show_demo_images):
+        img = Image.fromarray(image)
+        img = img.convert("L")
+        img.save("demo_images/" + str(idx) +".png")
+        img.show()
+
+    # Convert demo.csv to numpy array with 1*image_width*image_height.
+    demo_images, demo_labels = load_data_from_csv(demo_file_path)
+    print("demo image shape: ", demo_images.shape)  # demo image shape:  (5, 1, image_width, image_height)
+    print("demo label shape: ", demo_labels.shape)  # demo label shape:  (5,)
+    np.save(dump_folder_prefix + "demo_images.npy", demo_images)
+    np.save(dump_folder_prefix + "demo_labels.npy", demo_labels)
+
+    # Convert valid.csv to numpy array with 1*image_width*image_height.
+    valid_images, valid_labels = load_data_from_csv(valid_file_path)
+    print("valid image shape: ", valid_images.shape)  # valid image shape:  (438086, 1, image_width, image_height)
+    print("valid label shape: ", valid_labels.shape)  # valid label shape:  (438086,)
+    np.save(dump_folder_prefix + "valid_images.npy", valid_images)
+    np.save(dump_folder_prefix + "valid_labels.npy", valid_labels)
+
+    # Convert test.csv to numpy array with 1*image_width*image_height.
+    test_images, test_labels = load_data_from_csv(test_file_path)
+    print("test image shape: ", test_images.shape)  # test image shape:  (41, 1, image_width, image_height)
+    print("test label shape: ", test_labels.shape)  # test label shape:  (41,)
+    np.save(dump_folder_prefix + "test_images.npy", test_images)
+    np.save(dump_folder_prefix + "test_labels.npy", test_labels)
+
+    # Convert test_ans.csv to numpy array with 1*image_width*image_height.
+    test_ans_images, test_ans_labels = load_data_from_csv(test_ans_file_path)
+    print("test_ans image shape: ", test_ans_images.shape)  # test image shape:  (41, 1, image_width, image_height)
+    print("test_ans label shape: ", test_ans_labels.shape)  # test label shape:  (41,)
+    np.save(dump_folder_prefix + "test_ans_images.npy", test_ans_images)
+    np.save(dump_folder_prefix + "test_ans_labels.npy", test_ans_labels)
+
     # Convert train/*.csv to numpy array with 1*image_width*image_height.
     train_images, train_labels = convert_train_files(train_files_path)
     print("train image shape: ", train_images.shape)  # train image shape:  (3943968, 1, image_width, image_height)
